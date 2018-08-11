@@ -64,7 +64,7 @@ static inline void addRecentDeaths(Uint32 recentLoad){
 	}
 }
 
-Player::Player(Game* objParent):xVelBase(0),yVelBase(0),objParent(objParent),recordSaved(false),
+Player::Player(Game* objParent):objParent(objParent),recordSaved(false),
 inAirSaved(false),isJumpSaved(false),canMoveSaved(false),holdingOtherSaved(false){
 	//Set the dimensions of the player.
 	//The size of the player is 21x40.
@@ -710,7 +710,6 @@ void Player::move(vector<Block*> &levelObjects,int lastX,int lastY){
 		}
 	}
 
-
 	//Update traveling distance statistics.
 	if(isTraveling && (lastX!=box.x || lastY!=box.y) && !objParent->player.isPlayFromRecord() && !objParent->interlevel){
 		float dx=float(lastX-box.x),dy=float(lastY-box.y);
@@ -731,119 +730,92 @@ void Player::move(vector<Block*> &levelObjects,int lastX,int lastY){
 	downKeyPressed=false;
 }
 
-void Player::collision(vector<Block*> &levelObjects){
+void Player::collision(vector<Block*> &levelObjects, class Player* other){
 	//Only move when the player isn't dead.
 	if(dead)
 		return;
 
-	//First sort out the velocity.
-	//Add gravity acceleration to the vertical velocity.
-	if(!canMove)
-		//FIXME: xVel should be set to zero instead of substracting it from xVelBase.
-		//This isn't done since xVel won't be set back every frame but in handleInput.
-		xVelBase-=xVel;
-	if(isJump)
-		jump();
-	if(inAir==true){
-		yVel+=1;
-
-		//Cap fall speed to 13.
-		if(yVel>13)
-			yVel=13;
-	}
-	if(objCurrentStand!=NULL){
-		//Now get the velocity and delta of the object the player is standing on.
-		SDL_Rect v=objCurrentStand->getBox(BoxType_Velocity);
-		SDL_Rect delta=objCurrentStand->getBox(BoxType_Delta);
-
-		switch(objCurrentStand->type){
-		//For conveyor belts the velocity is transfered.
-		case TYPE_CONVEYOR_BELT:
-		case TYPE_SHADOW_CONVEYOR_BELT:
-			{
-		xVelBase=v.x;
-			}
-			break;
-		//In other cases, such as player on shadow, player on crate. the change in x position must be considered.
-		default:
-			{
-				if(delta.x != 0)
-					xVelBase+=delta.x;
-			}
-			break;
-		}
-		//NOTE: Only copy the velocity of the block when moving down.
-		//Upwards is automatically resolved before the player is moved.
-		if(delta.y>0){
-			//Fixes the jitters when the player is on a pushable block on a downward moving box.
-			//NEW FIX: the squash bug. The following line of code is commented and change 'v' to 'delta'.
-			//box.y+=delta.y;
-			yVelBase=delta.y;
-		}
-		else
-			yVelBase=0;
-	}
-
-	//Set the object the player is currently standing to NULL.
-	objCurrentStand=NULL;
-
-	//Store the location of the player.
+	//Store the location of the player before any movement.
 	int lastX=box.x;
 	int lastY=box.y;
 
+	Block* baseBlock=NULL;
+	if(objCurrentStand != NULL) {
+		baseBlock=objCurrentStand;
+	} else if(other->holdingOther && other->objCurrentStand != NULL) {
+		baseBlock=other->objCurrentStand;
+	} else if(other->holdingOther) {
+		std::cout << "ASSERT: Can't hold when not standing on object" << std::endl;
+	}
+
+	//Follow the object the character is standing on
+	if(baseBlock != NULL) {
+		SDL_Rect v=baseBlock->getBox(BoxType_Velocity);
+		SDL_Rect delta=baseBlock->getBox(BoxType_Delta);
+
+		switch(baseBlock->type){
+		//For conveyor belts the velocity is transfered.
+		case TYPE_CONVEYOR_BELT:
+		case TYPE_SHADOW_CONVEYOR_BELT:
+			box.x+=v.x;
+		//In other cases, such as player on shadow, player on crate. the change in x position must be considered.
+		default:
+			box.x+=delta.x;
+			box.y+=delta.y;
+			break;
+		}
+	}
+	//Set the object the player is currently standing to NULL.
+	objCurrentStand=NULL;
+
 	//An array that will hold all the GameObjects that are involved in the collision/movement.
-	vector<Block*> objects;
-	//All the blocks have moved so if there's collision with the player, the block moved into him.
-	for(unsigned int o=0;o<levelObjects.size();o++){
+	vector<Block*> collidables;
+	for(auto block : levelObjects){
 		//Make sure to only check visible blocks.
-		if (levelObjects[o]->queryProperties(GameObjectProperty_Flags, this) & 0x80000000)
+		if(block->queryProperties(GameObjectProperty_Flags, this) & 0x80000000)
 			continue;
 		//Make sure the object is solid for the player.
-		if(!levelObjects[o]->queryProperties(GameObjectProperty_PlayerCanWalkOn,this))
+		if(!block->queryProperties(GameObjectProperty_PlayerCanWalkOn,this))
 			continue;
-
-		//Check for collision.
-		if(checkCollision(box,levelObjects[o]->getBox()))
-			objects.push_back(levelObjects[o]);
+		collidables.push_back(block);
 	}
-	//There was collision so try to resolve it.
+	//All the blocks have moved so if there's collision with the player, the block moved into him.
+	vector<Block*> objects;
+	for(auto block : collidables){
+		//Check for collision.
+		if(checkCollision(box,block->getBox()))
+			objects.push_back(block);
+	}
+	//These objects have moved into the player
 	if(!objects.empty()){
-		//FIXME: When multiple moving blocks are overlapping the player can be "bounced" off depending on the block order.
-		for(unsigned int o=0;o<objects.size();o++){
-			SDL_Rect r=objects[o]->getBox();
-			SDL_Rect delta=objects[o]->getBox(BoxType_Delta);
-		
+		int pushLeft=0,pushRight=0,pushUp=0,pushDown=0;
+		for(auto block : objects){
+			SDL_Rect r=block->getBox();
+			int horizontalOverlap=box.x>=r.x?(r.x+r.w)-box.x:box.x+box.w-r.x;
+			int verticalOverlap=box.y>=r.y?(r.y+r.h)-box.y:box.y+box.h-r.y;
+			int direction=horizontalOverlap-verticalOverlap;
 			//Check on which side of the box the player is.
-			if(delta.x!=0){
-				if(delta.x>0){
-					if((r.x+r.w)-box.x<=delta.x)
-						box.x=r.x+r.w;
+			if(direction<=0){
+				if(box.x+box.w/2>r.x+r.w/2){
+					pushRight=max(pushRight,r.x+r.w-box.x);
 				}else{
-					if((box.x+box.w)-r.x<=-delta.x)
-						box.x=r.x-box.w;
+					pushLeft=max(pushLeft,box.x+box.w-r.x);
 				}
 			}
-			if(delta.y!=0){
-				if(delta.y>0){
-					if((r.y+r.h)-box.y<=delta.y)
-						box.y=r.y+r.h;
+			if(direction>=0){
+				if(box.y+box.h/2>r.y+r.h/2){
+					pushDown=max(pushDown,r.y+r.h-box.y);
 				}else{
-					if((box.y+box.h)-r.y<=-delta.y)
-						box.y=r.y-box.h;
+					pushUp=max(pushUp,box.y+box.h-r.y);
 				}
 			}
 		}
+		box.x+=pushRight-pushLeft;
+		box.y+=pushDown-pushUp;
 
 		//Check if the player is squashed.
-		for(unsigned int o=0;o<levelObjects.size();o++){
-			//Make sure the object is visible.
-			if (levelObjects[o]->queryProperties(GameObjectProperty_Flags, this) & 0x80000000)
-				continue;
-			//Make sure the object is solid for the player.
-			if(!levelObjects[o]->queryProperties(GameObjectProperty_PlayerCanWalkOn,this))
-				continue;
-				
-			if(checkCollision(box,levelObjects[o]->getBox())){
+		for(auto block : collidables){
+			if(checkCollision(box,block->getBox())){
 				//The player is squashed so first move him back.
 				box.x=lastX;
 				box.y=lastY;
@@ -870,40 +842,44 @@ void Player::collision(vector<Block*> &levelObjects){
 		}
 	}
 	
+	//Forced movement done, now voluntary movement
+	if(isJump)
+		jump();
+	if(inAir) {
+		yVel+=1;
+
+		//Cap fall speed to 13.
+		if(yVel>13)
+			yVel=13;
+	}
+
 	//Reuse the objects array, this time for blocks the player walks into.
 	objects.clear();
 	//Determine the collision frame.
 	SDL_Rect frame={box.x,box.y,box.w,box.h};
 	//Keep the horizontal movement of the player in mind.
-	if(xVel+xVelBase>=0){
-		frame.w+=(xVel+xVelBase);
+	if(xVel>=0){
+		frame.w+=xVel;
 	}else{
-		frame.x+=(xVel+xVelBase);
-		frame.w-=(xVel+xVelBase);
+		frame.x+=xVel;
+		frame.w-=xVel;
 	}
 	//And the vertical movement.
-	if(yVel+yVelBase>=0){
-		frame.h+=(yVel+yVelBase);
+	if(yVel>=0){
+		frame.h+=yVel;
 	}else{
-		frame.y+=(yVel+yVelBase);
-		frame.h-=(yVel+yVelBase);
+		frame.y+=yVel;
+		frame.h-=yVel;
 	}
 	//Loop through the game objects.
-	for(unsigned int o=0; o<levelObjects.size(); o++){
-		//Make sure the block is visible.
-		if (levelObjects[o]->queryProperties(GameObjectProperty_Flags, this) & 0x80000000)
-			continue;
-		//Check if the player can collide with this game object.
-		if(!levelObjects[o]->queryProperties(GameObjectProperty_PlayerCanWalkOn,this))
-			continue;
-
+	for(auto block : collidables){
 		//Check if the block is inside the frame.
-		if(checkCollision(frame,levelObjects[o]->getBox()))
-			objects.push_back(levelObjects[o]);
+		if(checkCollision(frame,block->getBox()))
+			objects.push_back(block);
 	}
 	//Horizontal pass.
-	if(xVel+xVelBase!=0){
-		box.x+=xVel+xVelBase;
+	if(canMove && xVel!=0){ // FIXME: Nice canMove usage, as now useless xVel computations are made
+		box.x+=xVel;
 		for(unsigned int o=0;o<objects.size();o++){
 			SDL_Rect r=objects[o]->getBox();
 			if(!checkCollision(box,r))
@@ -911,16 +887,16 @@ void Player::collision(vector<Block*> &levelObjects){
 
 			//In case of a pushable block we give it velocity.
 			if(objects[o]->type==TYPE_PUSHABLE){
-				objects[o]->xVel+=(xVel+xVelBase)/2;
+				objects[o]->xVel+=xVel/2;
 			}
 
-			if(xVel+xVelBase>0){
-				//We came from the left so the right edge of the player must be less or equal than xVel+xVelBase.
-				if((box.x+box.w)-r.x<=xVel+xVelBase)
+			if(xVel>0){
+				//We came from the left so the right edge of the player must be less or equal than xVel.
+				if((box.x+box.w)-r.x<=xVel)
 					box.x=r.x-box.w;
 			}else{
-				//We came from the right so the left edge of the player must be greater or equal than xVel+xVelBase.
-				if(box.x-(r.x+r.w)>=xVel+xVelBase)
+				//We came from the right so the left edge of the player must be greater or equal than xVel.
+				if(box.x-(r.x+r.w)>=xVel)
 					box.x=r.x+r.w;
 			}
 		}
@@ -930,8 +906,8 @@ void Player::collision(vector<Block*> &levelObjects){
 	inAir=true;
 
 	//Vertical pass.
-	if(yVel+yVelBase!=0){
-		box.y+=yVel+yVelBase;
+	if(yVel!=0){
+		box.y+=yVel;
 
 		//Value containing the previous 'depth' of the collision.
 		int prevDepth=0;
@@ -942,12 +918,12 @@ void Player::collision(vector<Block*> &levelObjects){
 				continue;
 		
 			//Now check how we entered the block (vertically or horizontally).
-			if(yVel+yVelBase>0){
+			if(yVel>0){
 				//Calculate the number of pixels the player is in the block (vertically).
 				int depth=(box.y+box.h)-r.y;
 				
-				//We came from the top so the bottom edge of the player must be less or equal than yVel+yVelBase.
-				if(depth<=yVel+yVelBase){
+				//We came from the top so the bottom edge of the player must be less or equal than yVel.
+				if(depth<=yVel){
 					//NOTE: lastStand is handled later since the player can stand on only one block at the time.
 
 					//Check if there's already a lastStand.
@@ -991,8 +967,8 @@ void Player::collision(vector<Block*> &levelObjects){
 					}
 				}
 			}else{
-				//We came from the bottom so the upper edge of the player must be greater or equal than yVel+yVelBase.
-				if(box.y-(r.y+r.h)>=yVel+yVelBase){
+				//We came from the bottom so the upper edge of the player must be greater or equal than yVel.
+				if(box.y-(r.y+r.h)>=yVel){
 					box.y=r.y+r.h;
 					yVel=0;
 				}
@@ -1035,8 +1011,7 @@ void Player::collision(vector<Block*> &levelObjects){
 	if(objCurrentStand)
 		objParent->broadcastObjectEvent(GameObjectEvent_PlayerIsOn,-1,NULL,objCurrentStand);
 
-	//Reset the base velocity.
-	xVelBase=yVelBase=0;
+	//Reset canMove flag
 	canMove=true;
 } 
 
@@ -1080,6 +1055,14 @@ void Player::show(SDL_Renderer& renderer){
 	//NOTE: We do logic here, because it's only needed by the appearance.
 	appearance.updateAnimation();
     appearance.draw(renderer, box.x-camera.x, box.y-camera.y);
+	const SDL_Rect ra = {box.x - camera.x, box.y - camera.y, box.w, box.h};
+	if(inAir) {
+		SDL_SetRenderDrawColor(&renderer,255,0,0,120);
+		SDL_RenderFillRect(&renderer, &ra);
+	} else if(objCurrentStand != NULL) {
+		SDL_SetRenderDrawColor(&renderer,0,255,0,120);
+		SDL_RenderFillRect(&renderer, &ra);
+	}
 }
 
 void Player::shadowSetState(){
@@ -1135,7 +1118,7 @@ void Player::shadowSetState(){
 		//read the input from keyboard.
 		recordIndex=-1;
 
-		//Check for xvelocity.
+		//Check for xVelelocity.
 		if(xVel>0)
 			currentKey|=PlayerButtonRight;
 		if(xVel<0)
@@ -1278,31 +1261,6 @@ void Player::otherCheck(class Player* other){
 
 					//Set the velocity things.
 					objCurrentStand=NULL;
-					if(other->objCurrentStand){
-						SDL_Rect v=other->objCurrentStand->getBox(BoxType_Velocity);
-						SDL_Rect delta=other->objCurrentStand->getBox(BoxType_Delta);
-
-						//If the shadow has moved, then change the movement of the player.
-						if(boxOther.x != boxShadow.x){
-							switch(other->objCurrentStand->type){
-							//For conveyor belts the velocity is transfered.
-							case TYPE_CONVEYOR_BELT:
-							case TYPE_SHADOW_CONVEYOR_BELT:
-								{
-						xVelBase=v.x;
-								}
-								break;
-							//In other cases, such as player on shadow, player on crate. the change in x position must be considered.
-							default:
-								{
-									if(delta.x != 0)
-										xVelBase+=delta.x;
-								}
-								break;
-							}
-						}
-						yVelBase=v.y;
-					}
 				}
 			}else if(boxShadow.y+boxShadow.h<=box.y+13 && !inAir){
 				//Shadow is on player.
@@ -1326,31 +1284,6 @@ void Player::otherCheck(class Player* other){
 
 					//Set the velocity things.
 					other->objCurrentStand=NULL;
-					if(objCurrentStand){
-						SDL_Rect v=objCurrentStand->getBox(BoxType_Velocity);
-						SDL_Rect delta=objCurrentStand->getBox(BoxType_Delta);
-
-						//If the player has moved, then change the movement of the shadow.
-						if(other->boxOther.x != box.x){
-							switch(objCurrentStand->type){
-							//For conveyor belts the velocity is transfered.
-							case TYPE_CONVEYOR_BELT:
-							case TYPE_SHADOW_CONVEYOR_BELT:
-								{
-						other->xVelBase=v.x;
-								}
-								break;
-							//In other cases, such as player on shadow, player on crate. the change in x position must be considered.
-							default:
-								{
-									if(delta.x != 0)
-										other->xVelBase+=delta.x;
-								}
-								break;
-							}
-						}
-						other->yVelBase=v.y;
-					}
 				}
 			}
 		}else{
@@ -1583,8 +1516,6 @@ void Player::swapState(Player* other){
 	//We need to swap the values of the player with the ones of the given player.
 	swap(box.x,other->box.x);
 	swap(box.y,other->box.y);
-	swap(xVelBase, other->yVelBase);
-	swap(yVelBase, other->yVelBase);
 	swap(objCurrentStand, other->objCurrentStand);
 	//NOTE: xVel isn't there since it's used for something else.
 	swap(yVel,other->yVel);

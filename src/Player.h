@@ -100,8 +100,6 @@ protected:
 	
 	//The x and y velocity.
 	int xVel, yVel;
-	//The base x and y velocity, used for standing on moving blocks.
-	int xVelBase, yVelBase;
 	
 	//Boolean if the player is in the air.
 	bool inAir;
@@ -260,7 +258,7 @@ public:
 	//Method that will handle the actual movement.
 	//NOTE: partially internal function. Should call collision() for both player/shadow before call move().
 	//levelObjects: Array containing the levelObjects, used to check collision.
-	void collision(std::vector<Block*> &levelObjects);
+	void collision(std::vector<Block*> &levelObjects, class Player* other);
 	
 };
 

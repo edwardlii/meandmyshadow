@@ -82,7 +82,6 @@ private:
 	int editorSpeed;
 
 	//Following is for the pushable block.
-	Block* objCurrentStand;
 	Block* objCurrentStandSave;
 
 	//Flags of the block for the editor.
@@ -100,11 +99,11 @@ public:
 	int xVelSave,yVelSave;
 	
 	//Follwing is for pushable block.
+	Block* objCurrentStand;
 	bool inAir;
-	int xVelBase,yVelBase;
+	bool hasMoved;
 	//The save variables for each of the above.
 	bool inAirSave;
-	int xVelBaseSave,yVelBaseSave;
 	
 	//The id of the block.
 	std::string id;
@@ -203,6 +202,9 @@ public:
 
 	//Method used for updating moving blocks or elements of blocks.
 	virtual void move() override;
+	void preMove();
+	bool movePushable(bool force);
+	void finishPushable();
 
 	//Get total time ot moving positions.
 	int getPathMaxTime();

@@ -534,6 +534,14 @@ void Game::handleEvents(ImageManager& imageManager, SDL_Renderer& renderer){
 }
 
 /////////////////LOGIC///////////////////
+int chainLength(Block* block) {
+	int length = 0;
+	while(block != NULL) {
+		block = block->objCurrentStand;
+		length++;
+	}
+	return length;
+}
 void Game::logic(ImageManager& imageManager, SDL_Renderer& renderer){
 	//Add one tick to the time.
 	time++;
@@ -586,31 +594,52 @@ void Game::logic(ImageManager& imageManager, SDL_Renderer& renderer){
 		//Send GameObjectEvent_OnEnterFrame event to the script
 		levelObjects[i]->onEvent(GameObjectEvent_OnEnterFrame);
 	}
+	vector<Block*> pushables;
 	for(unsigned int i=0;i<levelObjects.size();i++){
 		//Let the gameobject handle movement.
 		levelObjects[i]->move();
+		if(levelObjects[i]->type == TYPE_PUSHABLE) {
+			pushables.push_back(levelObjects[i]);
+		}
 	}
 	//Also update the scenery.
 	for (auto it = sceneryLayers.begin(); it != sceneryLayers.end(); ++it){
 		it->second->updateAnimation();
 	}
 
+	//NOTE: pushables require strict ordering
+	cout << " ===== FRAME ===== " << endl;
+	for(auto pushable : pushables) {
+		pushable->preMove();
+	}
+	std::sort(pushables.begin(), pushables.end(), [](Block* a, Block* b) -> int {return chainLength(a) < chainLength(b); });
+	bool stable; int rounds=0;
+	do {
+		cout << "-------ROUND " << (rounds + 1) << endl;
+		stable=true;
+		for(auto levelObject : pushables) {
+			stable &= levelObject->movePushable(rounds == 9);
+		}
+		rounds++;
+	} while(!stable && rounds < 10);
+	if(rounds >= 10) {
+		cerr << "*** Failed to resolve pushable collision!" << endl;
+	}
 	//Let the player store his move, if recording.
 	player.shadowSetState();
 	//Let the player give his recording to the shadow, if configured.
 	player.shadowGiveState(&shadow);
 
 	//NOTE: to fix bugs regarding player/shadow swap, we should first process collision of player/shadow then move them
-
 	SDL_Rect playerLastPosition = player.getBox();
 	SDL_Rect shadowLastPosition = shadow.getBox();
 
 	//Check collision for player.
-	player.collision(levelObjects);
+	player.collision(levelObjects, &shadow);
 	//Now let the shadow decide his move, if he's playing a recording.
 	shadow.moveLogic();
 	//Check collision for shadow.
-	shadow.collision(levelObjects);
+	shadow.collision(levelObjects, &player);
 
 	//Let the player move.
 	player.move(levelObjects, playerLastPosition.x, playerLastPosition.y);
